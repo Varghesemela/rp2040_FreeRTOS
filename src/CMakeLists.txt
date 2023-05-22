@@ -1,15 +1,4 @@
 
-# set(PRJ_SOURCE_DIR
-# ${CMAKE_CURRENT_LIST_DIR}
-# )
-
-# set(PRJ_LIBRARIES 
-#     flash
-#     servo
-#     Trapezoidal_Profile
-#     utils
-#     vcnl4040
-# )
 
 add_executable(${PROJECT_NAME} main.cpp)
 
@@ -19,6 +8,7 @@ include_directories(${CMAKE_SOURCE_DIR}/inc)
 
 target_include_directories(${PROJECT_NAME}  PUBLIC 
     ../lib/utils
+    ../lib/ws2812
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../lib/FreeRTOS-Kernel/include
 
@@ -41,6 +31,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
      hardware_adc
     utils
     freeRTOS
+    ws2812
     )
 
 

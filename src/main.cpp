@@ -1,168 +1,149 @@
-#define PICO_FLASH_SPI_CLKDIV   4
-
-#include <cmath>
-#include <cstring>
-#include <string>
-using namespace std;
-
-#include "project_config.h"
-#include "pins_board.h"
-#include "functions.h"
-// #include "pico/unique_id.h"
-
+#include <stdio.h>
+#include "pico/stdlib.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include <stdio.h>
-#include <math.h>
-#include "hardware/structs/sio.h"
+#include "semphr.h"
+#include "ws2812.hpp"
 
-int global_count;
+#include "hardware/adc.h"
 
-typedef struct can2040_msg CANMsg;
-#define LOG( msg ) printf(( __FILE__, msg ))
-// pico_unique_board_id_t id_out;
-
-PIO pio;
-struct repeating_timer timer1;
-
-// vars
+const int taskDelay = 100;
+const int taskSize = 128;
+SemaphoreHandle_t mutex, mutexLED;
 
 
-void GPIO_init() {
-    gpio_init(LED_SIG);
-    gpio_set_dir(LED_SIG, GPIO_OUT);
-    gpio_put(LED_SIG, LOW);
+#define mainTEMPERATURE_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+#define mainTEMPERATURE_TASK_FREQUENCY_MS (500 / portTICK_PERIOD_MS)
+#define mainTASK_LED (PICO_DEFAULT_LED_PIN)
+#define mainBLINK_TASK_PRIORITY (tskIDLE_PRIORITY +1)
+#define mainBLINK_TASK_FREQUENCY_MS (300 / portTICK_PERIOD_MS)
+#define TEMPERATURE_UNITS 'C'
+WS2812 ledStrip(
+    16,            // Data line is connected to pin 0. (GP0)
+    1,         // Strip is 6 LEDs long.
+    pio0,               // Use PIO 0 for creating the state machine.
+    0,                  // Index of the state machine that will be created for controlling the LED strip
+                        // You can have 4 state machines per PIO-Block up to 8 overall.
+                        // See Chapter 3 in: https://datasheets.raspberrypi.org/rp2040/rp2040-datasheet.pdf
+    WS2812::FORMAT_RGB  // Pixel format used by the LED strip
+);
 
-    gpio_init(LED_STAT);
-    gpio_set_dir(LED_STAT, GPIO_OUT);
-    gpio_put(LED_STAT, LOW);
 
+
+void vSafePrint(char *out)
+{
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    printf(out);
+    xSemaphoreGive(mutex);
 }
 
-
-#define BUFFER_LENGTH   50
-char buffer[BUFFER_LENGTH];
-const char s[2] = ",";
-const char start_of_frame = '<', end_of_frame = '>';
-string command_str, subcommand_str;
-string data_str;
-uint16_t buffer_index = 0, EOF_index = 0;
-bool SOF_flag = false, EOF_flag = false;
-
-// Core 1 interrupt Handler
-void core1_interrupt_handler() {
-    // Receive Raw Value, Convert and Print Temperature Value
-    // while (multicore_fifo_rvalid()){
-    //     printf("Core 1");
-    // }
-    multicore_fifo_clear_irq(); // Clear interrupt
+void vSafeLED(uint8_t red, uint8_t green, uint8_t blue){
+    xSemaphoreTake(mutexLED, portMAX_DELAY);
+    ledStrip.fill( WS2812::RGB(red, green, blue) );
+    ledStrip.show();
+    xSemaphoreGive(mutexLED);
 }
 
-/**
- * \brief Core 1 main loop
- *
- * This function serves as the main loop for the secondary core when initialised in the primary core.
- *
- */
-void core1_entry() {
-    // Configure Core 1 Interrupt
-    multicore_fifo_clear_irq();
-    multicore_lockout_victim_init();
-    // irq_set_exclusive_handler(SIO_IRQ_PROC1, core1_interrupt_handler);
-    // irq_set_enabled(SIO_IRQ_PROC1, true);
+/* References for this implementation:
+ * raspberry-pi-pico-c-sdk.pdf, Section '4.1.1. hardware_adc'
+ * pico-examples/adc/adc_console/adc_console.c */
+float read_onboard_temperature(const char unit)
+{
+    
+    /* 12-bit conversion, assume max value == ADC_VREF == 3.3 V */
+    const float conversionFactor = 3.3f / (1 << 12);
 
-    while (true) {
-        tight_loop_contents();
-        gpio_put(LED_STAT, true);
-        sleep_ms(333);
-        gpio_put(LED_STAT, false);
-        sleep_ms(333);
+    float adc = (float)adc_read() * conversionFactor;
+    float tempC = 27.0f - (adc - 0.706f) / 0.001721f;
 
+    if (unit == 'C')
+    {
+        return tempC;
+    }
+    else if (unit == 'F')
+    {
+        return tempC * 9 / 5 + 32;
+    }
+
+    return -1.0f;
+}
+
+static void prvBlinkTask(void *pvParameters)
+{
+    (void)pvParameters;
+    TickType_t xNextWakeTime;
+
+    /* Initialise xNextWakeTime - this only needs to be done once. */
+    xNextWakeTime = xTaskGetTickCount();
+    int count=0;
+    char out[32];
+
+
+    for (;;)
+    {
+        vSafeLED(count++, 0, 0);
+        // sprintf(out, "Helloo boy %d\n", count++);
+        // vSafePrint(out);
+        // printf("Helloo boy %d\n", count++);
+        xTaskDelayUntil(&xNextWakeTime, mainBLINK_TASK_FREQUENCY_MS);
     }
 }
 
-bool get_block(struct repeating_timer *t) {
-    // buffer_index = 0;
-    // while(true){
-    int c = getchar_timeout_us(0);
-    // printf("%c\n", c);
-    if (c == PICO_ERROR_TIMEOUT){
-        printf("[%s %d] Error! getchar timeout\n", __FUNCTION__, __LINE__);
-        return true;
-    }
-    if((buffer_index > BUFFER_LENGTH)){
-        printf("[%s %d] Error! Buffer filled\n", __FUNCTION__, __LINE__);
-        buffer_index = 0;
-        return true;
-    }
-    if(EOF_flag){
-        printf("[%s %d] Error! EOF true\n",  __FUNCTION__, __LINE__);
-        return true;
-    }
-    if (c == start_of_frame) {
-        SOF_flag = true;
-        command_str.clear();
-        subcommand_str.clear();
-//            data_str.clear();
-        std::fill( std::begin(data_str), std::end(data_str), '\0');
-        std::fill( std::begin(buffer), std::end(buffer), '\0' );
-        buffer_index = 0;
-    } else if (c == end_of_frame) {
-        EOF_flag = true;
-        EOF_index = buffer_index;
+static void prvTemperatureTask(void *pvParameters)
+{
+    (void)pvParameters;
+    TickType_t xNextWakeTime;
 
-        command_str = strtok(buffer, s);
-        if (command_str == "#RP64209"){
-            reset_usb_boot(0, 0);
+    /* Initialise xNextWakeTime - this only needs to be done once. */
+    xNextWakeTime = xTaskGetTickCount();
+
+    /* Enable onboard temperature sensor and
+     *   select its channel (do this once for efficiency, but beware that this
+     *   is a global operation). */
+    adc_set_temp_sensor_enabled(true);
+    uint8_t counter;
+
+    for (;;)
+    {
+        // TODO set a semaphore
+        vSafeLED(0, 0, counter++);
+        // switch to the temperature mux if needed
+        if (adc_get_selected_input() != 4)
+        {
+            adc_select_input(4);
         }
-        if(!is_only_alphabets(command_str)){
-            printf("Invalid command, change later\n");
-        }
+        float temperature = read_onboard_temperature(TEMPERATURE_UNITS);
+        // sprintf(out , "Onboard temperature = %.02f %c\n", temperature, TEMPERATURE_UNITS);
+        // vSafePrint(out);
+        printf("Onboard temperature = %.02f %c\n", temperature, TEMPERATURE_UNITS);
+        xTaskDelayUntil(&xNextWakeTime, mainTEMPERATURE_TASK_FREQUENCY_MS);
     }
-    if (SOF_flag && !EOF_flag && (c != start_of_frame)) {
-        buffer[buffer_index++] = (c & 0xFF);
-    }
-    return true;
 }
 
-
-int main() {
-    set_sys_clock_khz(250000, true);
+static void prvSetupHardware( void )
+{
     stdio_init_all();
-    multicore_launch_core1(core1_entry);
-    GPIO_init();
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, 1);
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+    // Initialize hardware AD converter, for the temperature sensor
+    adc_init();
+}
 
-    sleep_ms(3000);
+int main( void )
+{
+    /* Configure the hardware ready to run the demo. */
+    stdio_init_all();
+    prvSetupHardware();
 
-    add_repeating_timer_us(-10 * TICK_RATE, get_block, NULL, &timer1);
+    mutexLED = xSemaphoreCreateMutex();
 
-    printf("Hello\n");
-    while (true) {
-        if (!EOF_flag) {
 
-        } else {
-            if (command_str == "value") {
-                data_str = strtok(nullptr, s);
-                printf(data_str.c_str());
-                printf("\n");
-                double pos_in_mm;
-                pos_in_mm = strtod(data_str.c_str(), NULL);
-                printf("value: %f", pos_in_mm);
-                memset(buffer, '\0', sizeof(buffer));
+    xTaskCreate(prvBlinkTask, "blink", configMINIMAL_STACK_SIZE, NULL, mainBLINK_TASK_PRIORITY, NULL);
+    xTaskCreate(prvTemperatureTask, "temperature", configMINIMAL_STACK_SIZE, NULL, mainTEMPERATURE_TASK_PRIORITY, NULL);
 
-            } else if (command_str == "u2") {
-                printf(BOARD_TYPE "\n");
-                printf("ok\n");
+    /* Start the tasks and timer running. */
+    vTaskStartScheduler();
+    // ...
 
-            } else if (command_str == "help") {
-                printCommandlist();
-            }
-
-            buffer_index = 0;
-            EOF_index = 0;
-            memset(buffer, '\0', sizeof(buffer));
-            SOF_flag = false;
-            EOF_flag = false;
-        }
-    }
 }
