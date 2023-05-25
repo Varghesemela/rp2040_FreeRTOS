@@ -16,22 +16,25 @@ target_include_directories(${PROJECT_NAME}  PUBLIC
 
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
-     pico_stdlib
-     pico_multicore
-     pico_unique_id
-     hardware_sync
-     hardware_pio
-     hardware_dma
-     hardware_irq
-     hardware_i2c
-     hardware_uart
-     hardware_flash
-     hardware_pwm
-     hardware_watchdog
-     hardware_adc
+    pico_stdlib
+    pico_multicore
+    pico_unique_id
+    hardware_sync
+    hardware_pio
+    hardware_dma
+    hardware_irq
+    hardware_i2c
+    hardware_uart
+    hardware_flash
+    hardware_pwm
+    hardware_watchdog
+    hardware_adc
     utils
     freeRTOS
     ws2812
+
+    private_functions
+    magnetic_encoder
     )
 
 

@@ -1,17 +1,21 @@
 #include "functions.h"
 
 
-uint32_t pwm_set_freq_duty(uint pwm_num, uint32_t frequency, int d){
-    uint32_t clock = 125000000;
-    uint32_t divider16 = clock / frequency / 4096 + 
+uint32_t pwm_set_freq_duty(uint pwm_pin_num, uint32_t frequency, int duty_cycle){
+    uint32_t clock = clock_get_hz(clk_sys);
+    frequency = 2*frequency;
+    uint32_t divider16 = (clock / frequency) / 4096 +
                             (clock % (frequency * 4096) != 0);
-    if (divider16 / 16 == 0)
-    divider16 = 16;
-    uint32_t wrap = clock * 16 / divider16 / frequency - 1;
-    pwm_set_clkdiv_int_frac(pwm_gpio_to_slice_num(pwm_num), divider16/16,
+    if (divider16 / 16 == 0) {
+        divider16 = 16;
+    }
+
+    uint32_t wrap = (((clock * 16) / divider16) / frequency) - 1;
+    pwm_set_clkdiv_int_frac(pwm_gpio_to_slice_num(pwm_pin_num), divider16 / 16,
                                         divider16 & 0xF);
-    pwm_set_wrap(pwm_gpio_to_slice_num(pwm_num), wrap);
-    pwm_set_chan_level(pwm_gpio_to_slice_num(pwm_num), pwm_gpio_to_channel(pwm_num), wrap * d / 100);
+    pwm_set_phase_correct(pwm_gpio_to_slice_num(pwm_pin_num), true);
+    pwm_set_wrap(pwm_gpio_to_slice_num(pwm_pin_num), wrap);
+    pwm_set_chan_level(pwm_gpio_to_slice_num(pwm_pin_num), pwm_gpio_to_channel(pwm_pin_num), wrap * duty_cycle / 100);
     return wrap;
 }
 
@@ -28,7 +32,7 @@ float parse_numeric_value(){
             first_byte = false;
         }
         if(buffer>='0' && buffer<='9'){    
-            var = var*10 + (buffer - 48);
+            var = var*10 + (float)(buffer - 48);
             if (decimal_data){
                 decimal_power++;
             }
@@ -44,8 +48,8 @@ float parse_numeric_value(){
 
         }
     }
-    if (neg_data == true) var = -var;
-    if(decimal_data)    var = var/(pow(10, decimal_power));
+    if (neg_data) var = -var;
+    if(decimal_data)    var = var/(float)(pow(10, decimal_power));
     return var;
 }
 
