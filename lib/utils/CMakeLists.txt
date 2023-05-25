@@ -1,18 +1,26 @@
 project(utils)
 file(GLOB FILES *.c *.h)
-add_library(${PROJECT_NAME} functions.cpp functions.h)
+# add_library(${PROJECT_NAME} functions.cpp functions.h dynamixel_functions.cpp dynamixel_functions.h can_functions.cpp can_functions.h can_frames.h)
+add_library(${PROJECT_NAME} can_functions.cpp can_functions.h can_frames.h)
 
 # pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/pio/can2040.pio)
 
 target_sources(${PROJECT_NAME}
     PRIVATE
-        functions.cpp
-        functions.h     
+        # functions.cpp
+        # functions.h
+        # dynamixel_functions.cpp
+        # dynamixel_functions.h    
+        can_functions.cpp
+        can_functions.h  
+        can_frames.h         
 )
 
 target_include_directories(${PROJECT_NAME}
-    PUBLIC
-
+    PUBLIC 
+    # ../dynamixel/dynamixel2pico
+    # ../dynamixel/dxl_c
+    ../CAN
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -31,5 +39,8 @@ target_link_libraries(${PROJECT_NAME}
         hardware_sync
         hardware_watchdog
         hardware_pwm
+        dxl_c
+        dynamixel2pico
+        CAN
         
 )

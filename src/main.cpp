@@ -1,23 +1,31 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/bootrom.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
 #include "ws2812.hpp"
-
 #include "hardware/adc.h"
-
-const int taskDelay = 100;
-const int taskSize = 128;
-SemaphoreHandle_t mutex, mutexLED;
-
-
+// Private includes
+#include "../lib/private_functions/private_functions.h"
+////////////////////////////////////////////////////////////////////////////////
 #define mainTEMPERATURE_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define mainTEMPERATURE_TASK_FREQUENCY_MS (500 / portTICK_PERIOD_MS)
 #define mainTASK_LED (PICO_DEFAULT_LED_PIN)
 #define mainBLINK_TASK_PRIORITY (tskIDLE_PRIORITY +1)
 #define mainBLINK_TASK_FREQUENCY_MS (300 / portTICK_PERIOD_MS)
 #define TEMPERATURE_UNITS 'C'
+
+// Defines
+#define LED_PIN             25
+#define PRIORITY            1
+#define SYSTEM_INITIALIZED  1
+
+////////////////////////////////////////////////////////////////////////////////
+TaskHandle_t led_task_handle = NULL;
+TaskHandle_t motor_task_handle = NULL;
+// TaskHandle_t can_bus_task_handle = NULL;
+////////////////////////////////////////////////////////////////////////////////
 WS2812 ledStrip(
     16,            // Data line is connected to pin 0. (GP0)
     1,         // Strip is 6 LEDs long.
@@ -27,26 +35,9 @@ WS2812 ledStrip(
                         // See Chapter 3 in: https://datasheets.raspberrypi.org/rp2040/rp2040-datasheet.pdf
     WS2812::FORMAT_RGB  // Pixel format used by the LED strip
 );
-
-
-
-void vSafePrint(char *out)
-{
-    xSemaphoreTake(mutex, portMAX_DELAY);
-    printf(out);
-    xSemaphoreGive(mutex);
-}
-
-void vSafeLED(uint8_t red, uint8_t green, uint8_t blue){
-    xSemaphoreTake(mutexLED, portMAX_DELAY);
-    ledStrip.fill( WS2812::RGB(red, green, blue) );
-    ledStrip.show();
-    xSemaphoreGive(mutexLED);
-}
-
-/* References for this implementation:
- * raspberry-pi-pico-c-sdk.pdf, Section '4.1.1. hardware_adc'
- * pico-examples/adc/adc_console/adc_console.c */
+////////////////////////////////////////////////////////////////////////////////
+bool blink_flag = false;
+////////////////////////////////////////////////////////////////////////////////
 float read_onboard_temperature(const char unit)
 {
     
@@ -68,82 +59,113 @@ float read_onboard_temperature(const char unit)
     return -1.0f;
 }
 
-static void prvBlinkTask(void *pvParameters)
+
+
+void system_init()
 {
-    (void)pvParameters;
-    TickType_t xNextWakeTime;
-
-    /* Initialise xNextWakeTime - this only needs to be done once. */
-    xNextWakeTime = xTaskGetTickCount();
-    int count=0;
-    char out[32];
-
-
-    for (;;)
-    {
-        vSafeLED(count++, 0, 0);
-        // sprintf(out, "Helloo boy %d\n", count++);
-        // vSafePrint(out);
-        // printf("Helloo boy %d\n", count++);
-        xTaskDelayUntil(&xNextWakeTime, mainBLINK_TASK_FREQUENCY_MS);
-    }
-}
-
-static void prvTemperatureTask(void *pvParameters)
-{
-    (void)pvParameters;
-    TickType_t xNextWakeTime;
-
-    /* Initialise xNextWakeTime - this only needs to be done once. */
-    xNextWakeTime = xTaskGetTickCount();
-
-    /* Enable onboard temperature sensor and
-     *   select its channel (do this once for efficiency, but beware that this
-     *   is a global operation). */
-    adc_set_temp_sensor_enabled(true);
-    uint8_t counter;
-
-    for (;;)
-    {
-        // TODO set a semaphore
-        vSafeLED(0, 0, counter++);
-        // switch to the temperature mux if needed
-        if (adc_get_selected_input() != 4)
-        {
-            adc_select_input(4);
-        }
-        float temperature = read_onboard_temperature(TEMPERATURE_UNITS);
-        // sprintf(out , "Onboard temperature = %.02f %c\n", temperature, TEMPERATURE_UNITS);
-        // vSafePrint(out);
-        printf("Onboard temperature = %.02f %c\n", temperature, TEMPERATURE_UNITS);
-        xTaskDelayUntil(&xNextWakeTime, mainTEMPERATURE_TASK_FREQUENCY_MS);
-    }
-}
-
-static void prvSetupHardware( void )
-{
+    // Debug Init
     stdio_init_all();
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, 1);
-    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+    sleep_ms(3000);
+    printf("System initializing\n");
+
+    // GPIO Init
+    GPIO_init();
+
+    // Motor PWM control Init
+    pwm_init_interrupt();
+
+    // Encoder SPI communication Init
+    encoder_init();
+
     // Initialize hardware AD converter, for the temperature sensor
     adc_init();
+
+    blink_flag = true;
 }
 
-int main( void )
+void led_task(void *params)
+{
+    uint32_t notification_value = 0;
+    for(;;)
+    {
+        // printf("debug1\n");
+        if(xTaskNotifyWait(0, 0, &notification_value, portMAX_DELAY))
+        {
+            if(notification_value == SYSTEM_INITIALIZED)
+            {
+                
+                gpio_put(LED_PIN, true);
+                vTaskDelay(1000/portTICK_PERIOD_MS);
+                gpio_put(LED_PIN, false);
+            }
+                xTaskNotify(motor_task_handle, 1, eSetValueWithoutOverwrite);
+            
+
+            // if(notification_value)
+        }
+    }
+}
+
+void motor_task(void *params)
+{
+    uint32_t notification_value = 0;
+
+
+    for(;;)
+    {
+        if(xTaskNotifyWait(0, 0, &notification_value, portMAX_DELAY))
+        {
+            xTaskNotify(led_task_handle, SYSTEM_INITIALIZED, eSetValueWithoutOverwrite);
+        }
+            
+    }
+}
+
+// void can_bus_task(void *params)
+// {
+    
+//     for(;;)
+//     {
+        
+//     }
+// }
+
+////////////////////////////////////////////////////////////////////////////////
+int main()
 {
     /* Configure the hardware ready to run the demo. */
-    stdio_init_all();
-    prvSetupHardware();
+    system_init();
 
-    mutexLED = xSemaphoreCreateMutex();
+    // mutexLED = xSemaphoreCreateMutex();
 
-
-    xTaskCreate(prvBlinkTask, "blink", configMINIMAL_STACK_SIZE, NULL, mainBLINK_TASK_PRIORITY, NULL);
-    xTaskCreate(prvTemperatureTask, "temperature", configMINIMAL_STACK_SIZE, NULL, mainTEMPERATURE_TASK_PRIORITY, NULL);
+    // Tasks Init
+    if(xTaskCreate(led_task, "blink", 1024, NULL, PRIORITY, &led_task_handle) != pdPASS)
+        printf("Task Creation Failed!\n");
+    if(xTaskCreate(motor_task, "temperature", 2048, NULL, PRIORITY, &motor_task_handle) != pdPASS)
+        printf("Motor task init failed\n");
+    // xTaskCreate(can_bus_task, "blink", 1024, NULL, PRIORITY, &can_bus_task_handle);
 
     /* Start the tasks and timer running. */
+    xTaskNotify(led_task_handle, SYSTEM_INITIALIZED, eSetValueWithoutOverwrite);
     vTaskStartScheduler();
-    // ...
+
+    // if(blink_flag)
+    
+            
+    // vTaskEndScheduler();
+
+    printf("Program complete\n");
+    while(1)
+    {
+        // if(blink_flag)
+        //     xTaskNotify(led_task_handle, SYSTEM_INITIALIZED, eSetValueWithoutOverwrite);
+            // xTaskNotifyGive
+        // printf("Program complete\n");
+        char c = getchar_timeout_us(0);
+        if(c == '#')
+            // reset_usb_boot(0,0);
+        sleep_ms(1000);
+    }
+    
 
 }
